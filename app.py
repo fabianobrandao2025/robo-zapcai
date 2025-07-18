@@ -1,48 +1,56 @@
 # -*- coding: utf-8 -*-
 import os
-import requests
 import pandas as pd
 import zipfile
 import io
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import logging
+from ftplib import FTP  # Importa a biblioteca correta para FTP
 
 # Configura o logging para vermos o que o robô está a fazer
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 app = Flask(__name__)
 
-# URL oficial para o download da base de dados
-FTP_URL = "ftp://ftp.mtps.gov.br/portal/fiscalizacao/seguranca-e-saude-no-trabalho/caepi/tgg_export_caepi.zip"
+# Detalhes do servidor FTP
+FTP_HOST = "ftp.mtps.gov.br"
+FTP_PATH = "/portal/fiscalizacao/seguranca-e-saude-no-trabalho/caepi/"
+FTP_FILENAME = "tgg_export_caepi.zip"
 
 # Variável global para guardar os dados dos C.A.s em memória
 ca_data = pd.DataFrame()
 
 def atualizar_base_de_dados():
     """
-    Esta função baixa a base de dados do governo, processa-a e
+    Esta função baixa a base de dados do governo via FTP, processa-a e
     guarda na memória para consultas ultra-rápidas.
     """
     global ca_data
-    logging.info("A iniciar a atualização da base de dados do CAEPI...")
+    logging.info("A iniciar a atualização da base de dados do CAEPI via FTP...")
     try:
-        # Baixa o ficheiro .zip
-        response = requests.get(FTP_URL, timeout=300) # Timeout de 5 minutos
-        response.raise_for_status()
-        logging.info("Download do ficheiro .zip concluído com sucesso.")
+        # Conecta-se ao servidor FTP
+        with FTP(FTP_HOST) as ftp:
+            ftp.login()  # Login anónimo
+            ftp.cwd(FTP_PATH) # Entra na pasta correta
+
+            # Prepara um buffer em memória para receber o ficheiro
+            ftp_buffer = io.BytesIO()
+            
+            # Baixa o ficheiro para o buffer
+            ftp.retrbinary(f"RETR {FTP_FILENAME}", ftp_buffer.write)
+            ftp_buffer.seek(0) # Volta ao início do buffer para leitura
+            logging.info("Download do ficheiro .zip via FTP concluído com sucesso.")
 
         # Extrai o ficheiro .txt do .zip em memória
-        with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+        with zipfile.ZipFile(ftp_buffer) as z:
             # Encontra o nome do ficheiro .txt dentro do zip
             txt_filename = [name for name in z.namelist() if name.endswith('.txt')][0]
             with z.open(txt_filename) as txt_file:
-                # Lê o ficheiro .txt com o Pandas, que é ótimo para lidar com dados
-                # Usamos 'latin1' que é a codificação comum para ficheiros de governos brasileiros
-                # O separador é o '|' (pipe), como vimos no documento do MTE
-                df = pd.read_csv(txt_file, sep='|', encoding='latin1', on_bad_lines='skip')
+                # Lê o ficheiro .txt com o Pandas
+                df = pd.read_csv(txt_file, sep='|', encoding='latin1', on_bad_lines='skip', low_memory=False)
                 
-                # Renomeia a primeira coluna que vem com um caractere estranho
+                # Renomeia a primeira coluna
                 df = df.rename(columns={df.columns[0]: 'NRRegistroCA'})
                 
                 # Define a coluna do C.A. como o nosso índice para buscas rápidas
