@@ -6,12 +6,16 @@ import io
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 import logging
-from ftplib import FTP  # Importa a biblioteca correta para FTP
+from ftplib import FTP
+import atexit
 
 # Configura o logging para vermos o que o robô está a fazer
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 app = Flask(__name__)
+# --- ALTERAÇÃO IMPORTANTE PARA CORRIGIR ACENTOS ---
+app.config['JSON_AS_ASCII'] = False
+# ---------------------------------------------------
 
 # Detalhes do servidor FTP
 FTP_HOST = "ftp.mtps.gov.br"
@@ -30,7 +34,7 @@ def atualizar_base_de_dados():
     logging.info("A iniciar a atualização da base de dados do CAEPI via FTP...")
     try:
         # Conecta-se ao servidor FTP
-        with FTP(FTP_HOST) as ftp:
+        with FTP(FTP_HOST, timeout=300) as ftp: # Timeout de 5 minutos
             ftp.login()  # Login anónimo
             ftp.cwd(FTP_PATH) # Entra na pasta correta
 
@@ -68,7 +72,7 @@ def index():
     if not ca_data.empty:
         return f"<h1>Robô ZapCA.I está no ar!</h1><p>Base de dados carregada com {len(ca_data)} registos.</p>"
     else:
-        return "<h1>Robô ZapCA.I está no ar!</h1><p>A aguardar o carregamento da base de dados. Por favor, tente novamente em alguns minutos.</p>"
+        return "<h1>Robô ZapCA.I está no ar!</h1><p>A carregar a base de dados em segundo plano. Por favor, tente a sua consulta em alguns minutos.</p>"
 
 @app.route('/consulta/<int:numero_ca>')
 def api_consulta_ca(numero_ca):
@@ -88,17 +92,16 @@ def api_consulta_ca(numero_ca):
 
 # --- Agendador para Atualização Automática ---
 scheduler = BackgroundScheduler(daemon=True)
-# Agenda a atualização para acontecer todos os dias às 3 da manhã
+# Agenda a primeira atualização para acontecer imediatamente em segundo plano
+scheduler.add_job(atualizar_base_de_dados)
+# Agenda a atualização diária para acontecer todos os dias às 3 da manhã
 scheduler.add_job(atualizar_base_de_dados, 'cron', hour=3, minute=0)
 scheduler.start()
 
-# Inicia a primeira atualização assim que o robô liga
-try:
-    atualizar_base_de_dados()
-except Exception as e:
-    logging.error(f"Erro na primeira carga da base de dados: {e}")
-
+# Garante que o agendador seja desligado corretamente quando a aplicação fechar
+atexit.register(lambda: scheduler.shutdown())
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
+
